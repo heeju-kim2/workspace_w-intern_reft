@@ -1,10 +1,40 @@
 import fire
+import random
+import numpy as np
 import pyteft
 import torch
 import transformers
+from configs import train_config as TRAIN_CONFIG
+
+from utils.config_utils import (
+    update_config,
+    generate_peft_config,
+    generate_dataset_config,
+    get_dataloader_kwargs,
+)
+
+from accelerate import Accelerator, DeepSpeedPlugin
+from accelerate.utils import is_xpu_available, FP8RecipeKwargs
+
+MIXED_PSN_DTYPE = { "bfloat16" : "bf16", "float16":"fp16", "float8": "fp8", "None": "no"}
+ANY_PSN_DTYPE = {"bfloat16" : torch.bfloat16, "float16": torch.float16, "float8": torch.float8_e5m2, "float32": torch.float32}
+
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if is_xpu_available():
+        torch.xpu.manual_seed(seed)
+    else:
+        torch.cuda.manual_seed_all(seed)
 
 def main(**args):
     train_config = TRAIN_CONFIG()
+    update_config(train_config, **args)
+
+    set_seed(train_config.seed)
+
+    print(train_config)
 
     model_name_or_path = "../../models/Llama-2-7b-chat-hf"
     model = transformers.AutoModelForCausalLM.from_pretrained(
@@ -12,6 +42,14 @@ def main(**args):
         torch_dtype=torch.bfloat16,
         device_map='cuda',
     )
+
+    mixed_precision =MIXED_PSN_DTYPE[train_config.dtype] if train_config.mixed_precision else None
+    fp8_kwargs = [FP8RecipeKwargs(backend="te")] if train_config.dtype == "fp8" else None
+    
+    accelerator = Accelerator(mixed_precision=mixed_precision,
+                              deepspeed_plugin=None,
+                              kwargs_handlers=fp8_kwargs)
+
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, padding_side='left')
     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
